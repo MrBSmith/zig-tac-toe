@@ -2,8 +2,22 @@ const std = @import("std");
 const ArrayList = std.ArrayList;
 const testing = std.testing;
 
-const Player = enum { none, circle, cross };
+const Player = enum {
+    none,
+    circle,
+    cross,
+
+    fn getSymbol(self: *Player) u32 {
+        return switch (self) {
+            Player.none => "_",
+            Player.circle => "0",
+            Player.cross => "X",
+        };
+    }
+};
+
 const gridError = error{outOfBound};
+const invalidInput = error{unexpected};
 const grid_size = 3;
 
 const Cell = struct {
@@ -32,12 +46,8 @@ const Grid = struct {
 
     pub fn print(self: *Grid) void {
         for (self.tiles) |row| {
-            for (row) |tile| {
-                const c: *const [1]u8 = switch (tile) {
-                    Player.none => "_",
-                    Player.circle => "0",
-                    Player.cross => "X",
-                };
+            for (row) |player| {
+                const c = player.getSymbol();
 
                 std.debug.print("{s}", .{c});
             }
@@ -72,11 +82,29 @@ const Grid = struct {
             if (result != Player.none) return result;
         }
 
+        // Check top-left to bottom-right diagonal
+        const top_left_value = self.tiles[0][0];
+
+        for (1..grid_size) |i| {
+            if (self.tiles[i][i] != top_left_value) {
+                break;
+            }
+        } else return top_left_value;
+
+        // Check bottom-left to top-right diagonal
+        const bottom_left_value = self.tiles[0][grid_size - 1];
+
+        for (1..grid_size) |i| {
+            if (self.tiles[i][grid_size - 1 - i] != bottom_left_value) {
+                break;
+            }
+        } else return bottom_left_value;
+
         return Player.none;
     }
 
     pub fn isCellFree(self: *Grid, cell: *const Cell) !bool {
-        if (cell.x < 0 or cell.x >= grid_size or cell.y < 0 or cell.y >= grid_size) {
+        if (cell.x >= grid_size or cell.y >= grid_size) {
             return error.outOfBound;
         }
 
@@ -84,57 +112,39 @@ const Grid = struct {
     }
 };
 
-pub fn ask_user(str: []const u8) !u8 {
-    const buffer_size: u8 = 10;
-    var buffer: [buffer_size]u8 = undefined;
+pub fn main() !void {
+    var want_to_play = true;
 
-    const stdin = std.io.getStdIn().reader();
+    while (want_to_play) {
+        var grid = Grid{};
+        grid.init();
 
-    std.debug.print("Enter a {s} index please: ", .{str});
-
-    if (try stdin.readUntilDelimiterOrEof(buffer[0..], '\n')) |input| {
-        const end_index = if (input[input.len - 1] == '\r') input.len - 1 else input.len;
-
-        const slice = input[0..end_index];
-        const value = try std.fmt.parseInt(u8, slice, buffer_size);
-
-        if (value < 3) {
-            return value;
-        } else {
-            return error.InvalidCharacter;
-        }
-    } else {
-        return error.InvalidCharacter;
-    }
-}
-
-pub fn askPlayerCell(grid: *Grid) *const Cell {
-    var is_valid_cell = false;
-
-    while (!is_valid_cell) {
+        const winner = try gameLoop(&grid);
         grid.print();
-        const row: u8 = ask_user("row") catch {
-            continue;
-        };
-        const column: u8 = ask_user("column") catch {
-            continue;
-        };
-        const cell = Cell{ .x = row, .y = column };
 
-        is_valid_cell = grid.isCellFree(&cell) catch {
-            std.debug.print("Invalid position, try again!", .{});
-            continue;
-        };
-
-        if (is_valid_cell) {
-            return &cell;
+        if (winner == Player.none) {
+            std.debug.print("It's a draw!\n", .{});
+        } else {
+            std.debug.print("{s} win the game!\n", .{@tagName(winner)});
         }
-    } else {
-        unreachable;
+
+        std.debug.print("Do you want to play again? y/n\n", .{});
+
+        while (askPlayerInputChar()) |input| {
+            const char = std.ascii.toLower(input);
+
+            want_to_play = switch (char) {
+                'y' => true,
+                'n' => false,
+                else => continue,
+            };
+        } else |err| {
+            if (err == invalidInput.unexpected) continue;
+        }
     }
 }
 
-pub fn game_loop(grid: *Grid) !Player {
+pub fn gameLoop(grid: *Grid) !Player {
     var current_player = Player.circle;
     var turn_count: u8 = 0;
     const max_nb_turns = grid_size * grid_size;
@@ -161,11 +171,137 @@ pub fn game_loop(grid: *Grid) !Player {
     return Player.none;
 }
 
-pub fn main() !void {
-    var grid = Grid{};
-    grid.init();
+pub fn askPlayerInputChar() invalidInput!u8 {
+    const buffer_size: u8 = 10;
+    var buffer: [buffer_size]u8 = undefined;
 
-    const winner = try game_loop(&grid);
-    grid.print();
-    std.debug.print("{s} win the game!", .{@tagName(winner)});
+    const stdin = std.io.getStdIn().reader();
+    const input = stdin.readUntilDelimiterOrEof(buffer[0..], '\n') catch {
+        return invalidInput.unexpected;
+    } orelse return invalidInput.unexpected;
+
+    const end_index = if (input[input.len - 1] == '\r') input.len - 1 else input.len;
+    const slice = input[0..end_index];
+
+    if (slice.len > 0) {
+        return slice[0];
+    } else {
+        return invalidInput.unexpected;
+    }
+
+    return invalidInput.unexpected;
+}
+
+pub fn isValidGridIndex(index: u8) bool {
+    return index < grid_size;
+}
+
+pub fn askPlayerCell(grid: *Grid) *const Cell {
+    var is_valid_cell = false;
+
+    while (!is_valid_cell) {
+        grid.print();
+
+        std.debug.print("Enter a row index please: ", .{});
+
+        const row_char: u8 = askPlayerInputChar() catch {
+            continue;
+        };
+        const row = std.fmt.parseInt(u8, &[1]u8{row_char}, 10) catch {
+            continue;
+        };
+
+        std.debug.print("Enter a column index please: ", .{});
+
+        const column_char: u8 = askPlayerInputChar() catch {
+            continue;
+        };
+        const column = std.fmt.parseInt(u8, &[1]u8{column_char}, 10) catch {
+            continue;
+        };
+
+        const cell = Cell{ .x = row, .y = column };
+
+        is_valid_cell = grid.isCellFree(&cell) catch {
+            std.debug.print("Invalid position, try again!\n", .{});
+            continue;
+        };
+
+        if (is_valid_cell) {
+            return &cell;
+        } else {
+            std.debug.print("Invalid position, try again!\n", .{});
+        }
+    } else {
+        unreachable;
+    }
+}
+
+test "test Grid.winCheck() row wins" {
+    const player_types = [2]Player{ Player.circle, Player.cross };
+
+    for (player_types) |player| {
+        for (0..3) |row| {
+            var grid = Grid{};
+            grid.init();
+
+            grid.tiles[row] = [_]Player{player} ** 3;
+            try std.testing.expect(grid.checkWin() == player);
+        }
+    }
+}
+
+test "test Grid.winCheck() column wins" {
+    const player_types = [2]Player{ Player.circle, Player.cross };
+
+    for (player_types) |player| {
+        for (0..3) |column| {
+            var grid = Grid{};
+            grid.init();
+
+            for (0..3) |row| {
+                grid.tiles[row][column] = player;
+            }
+
+            try std.testing.expect(grid.checkWin() == player);
+        }
+    }
+}
+
+test "test Grid.winCheck() top left to bottom right wins" {
+    const player_types = [2]Player{ Player.circle, Player.cross };
+
+    for (player_types) |player| {
+        var grid = Grid{ .tiles = [3][3]Player{
+            [3]Player{ player, Player.none, Player.none },
+            [3]Player{ Player.none, player, Player.none },
+            [3]Player{ Player.none, Player.none, player },
+        } };
+
+        try std.testing.expect(grid.checkWin() == player);
+    }
+}
+
+test "test Grid.winCheck() top right to bottom left wins" {
+    const player_types = [2]Player{ Player.circle, Player.cross };
+
+    for (player_types) |player| {
+        var grid = Grid{ .tiles = [3][3]Player{
+            [3]Player{ Player.none, Player.none, player },
+            [3]Player{ Player.none, player, Player.none },
+            [3]Player{ player, Player.none, Player.none },
+        } };
+
+        try std.testing.expect(grid.checkWin() == player);
+    }
+}
+
+test "test Grid.winCheck() non winning situations" {
+    var grid = Grid{ .tiles = [3][3]Player{
+        [3]Player{ Player.cross, Player.circle, Player.cross },
+        [3]Player{ Player.cross, Player.circle, Player.none },
+        [3]Player{ Player.circle, Player.cross, Player.none },
+    } };
+
+    try std.testing.expect(grid.checkWin() == Player.none);
 }
